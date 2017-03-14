@@ -129,7 +129,7 @@ if __name__ == "__main__":
                     xLabels.append(xLabel)
                     matrix[dataset["key"] + condition["key"] + subcondition["key"]] = []
 
-        # Fill Matri With AUC Values from PDFs
+        # Fill Matrix With AUC Values from PDFs
         for dataset in metadata["datasets"]:
             for condition in metadata["conditions"]:
                 bqsr = matrix[dataset["key"] + condition["key"] + "bqsr"]
@@ -193,9 +193,6 @@ if __name__ == "__main__":
             t.tick2On = False
         fig.savefig("output/%s-heatmap.pdf" % vafStr)
         plt.show()
-
-
-
 
 else:
     pass

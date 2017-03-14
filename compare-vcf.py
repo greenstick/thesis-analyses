@@ -6,18 +6,11 @@ from collections import defaultdict
 from operator import itemgetter
 from statistics import mean, median, mode, stdev, variance
 from sklearn import metrics
-import sys
-import operator
-import argparse
-
-# Import Libraries
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.patches as mpatches
-import matplotlib.pyplot as Plot
-import numpy as Np
+import operator, argparse, matplotlib, hashlib
 import vcf as VCF
 
+# Allows Matplotlib to Render on Machine With No Display
+matplotlib.use('Agg')
 # Set matplotlib style
 matplotlib.style.use('ggplot')
 
@@ -42,8 +35,6 @@ def hashVariants (records, props, algorithm = "md5", collisionCheck = False):
         collisions - Boolean
         
     """
-    import hashlib
-    from collections import OrderedDict
     hashMap, count, collisions = OrderedDict(), 0, False
     for record in records:
         variantStr = "".join([str(getattr(record, prop)) for prop in props])
@@ -54,8 +45,10 @@ def hashVariants (records, props, algorithm = "md5", collisionCheck = False):
         assert (len(hashMap.keys()) == count), print("Warning: Collision occurred (%s). Try using a difference hashing function.\nAvailable algorithms: %s\n" % (algorithm, ", ".join(hashlib.algorithms_available)))
     return hashMap
 
+
 # Generate Analysis From Variant Hashmaps
-def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation = "<", threshold = 100, nonzero = 0.000000000001):
+def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation = "<", threshold = 100):
+    
     # Map Operators
     operators = {
         '>': operator.gt,
@@ -64,48 +57,24 @@ def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation 
         '<=': operator.le,
         '=': operator.eq
     }
-    # Setup Analysis by Threshold
-    analysis = {
-        "tp"          : set(),
-        "fp"          : set(),
-        "tn"          : set(),
-        "fn"          : set(),
-        "sensitivity" : 0.0,
-        "specificity" : 0.0,
-        "precision"   : 0.0,
-        "recall"      : 0.0,
-        "tpr"         : 0.0,
-        "tnr"         : 0.0,
-        "fpr"         : 0.0,
-        "fnr"         : 0.0,
-        "accuracy"    : 0.0,
-        "f1score"     : 0.0,
-        "fdr"         : 0.0,
-        "for"         : 0.0,
-        "ppv"         : 0.0,
-        "npv"         : 0.0,
-        "diagnosticOR": 0.0,
-        "n"           : 0
-    }
-    cKeys = conditionHashMap.keys()
 
     # Sort Variants into TP/TN/FP/FN Sets
     tpSet, fpSet, tnSet, fnSet = set(), set(), set(), set()
     for hashKey, record in conditionHashMap.items():
         if operators[operation](float(record.INFO[metricKey]), threshold):
-            if hashKey in trSet:
+            if hashKey in truthSet:
                 fnSet.add(hashKey)
             else:
                 tnSet.add(hashKey)
         else:
-            if hashKey in trSet:
+            if hashKey in truthSet:
                 tpSet.add(hashKey)
             else:
                 fpSet.add(hashKey)
 
-    # TP/TN/FP/FN Values - Add Non Zero (0.000000000001) to Each to Prevent Zero-Division
-    # While the Addition Theoretically Introduces a Bias, Practically Statistics are Unchanged (Validated)
-    
+    # Analysis Object
+    analysis = {}
+
     # True Positives
     tp = len(tpSet)
     analysis["tp"] = tp
@@ -123,13 +92,12 @@ def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation 
     analysis["fn"] = fn
     del fnSet
 
+    # Statistics (Some Computations Replicated for Naming)
     analysis["tp"] = tp
     analysis["tn"] = tn
     analysis["fp"] = fp
     analysis["fn"] = fn
-    analysis["nonzero"] = nonzero
-    # try:
-        # Statistics (Some Computations Replicated for Naming)
+    # Ternary Operations to Avoid Function Limits for Statistics (due to 0 values)
     analysis["sensitivity"]   = tp / (tp + fn) if tp > 0 else 0.0
     analysis["specificity"]   = tn / (tn + fp) if tn > 0 else 0.0
     analysis["precision"]     = tp / (tp + fp) if tp > 0 else 0.0
@@ -158,24 +126,6 @@ def generateAnalyses (conditionHashMap, truthHashMap, metricKey = "TLOD", thresh
     # Use Thresholds to Classify Positive or Negative 
     for threshold in range(0, thresholds, skip):
         analyses[threshold] = generateAnalysis(conditionHashMap, truthHashMap, metricKey = metricKey, threshold = threshold)
-    return analyses
-
-# Generate Analysis by Threshold - A Macro Really
-def generateMultipleAnalysesByThresholds (condition, truth, key, thresholds, byType = "info"):
-    analyses = []
-    i = 0
-    printProgress(i, len(thresholds), prefix = "Generating Analyses", suffix = "Computed", barLength = 50)
-    for threshold in thresholds:
-        if byType.lower() == "info":
-            subset = subsetHashMapByInfo(condition, threshold, key = key)
-        if byType.lower() == "format":
-            subset = subsetHashMapByFormat(condition, threshold, key = key)
-        if subset:
-            analyses.append(generateAnalyses(subset, truth))
-            i += 1
-            printProgress(i, len(thresholds), prefix = "Generating Analyses", suffix = "Computed", barLength = 50)
-        else:
-            print("Error Subsetting: Ensure byType is specified as either 'info' or 'format' and that the key exists.")
     return analyses
 
 #
@@ -378,7 +328,7 @@ def printStatistics (analysis, output = ""):
 
 # Print Best by Some Metric
 def printBest (analysis, metric = "accuracy", output = ""):
-    threshold, best = max(enumerate([records[metric] for threshold, records in analysis.items()]), key=itemgetter(1))
+    threshold, best = max(enumerate([records[metric] for threshold, records in analysis.items()]), key = itemgetter(1))
     records = analysis[threshold]
     lines = [
         "Best Threshold by '%s'\n" % metric,
@@ -451,27 +401,6 @@ def getRanges (splits):
 #
 # Interface Management & Output Formatting
 #
-
-# Print iterations progress
-def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█'):
-    """
-    Call in a loop to create terminal progress bar
-    @params:
-        iteration   - Required  : current iteration (Int)
-        total       - Required  : total iterations (Int)
-        prefix      - Optional  : prefix string (Str)
-        suffix      - Optional  : suffix string (Str)
-        decimals    - Optional  : positive number of decimals in percent complete (Int)
-        length      - Optional  : character length of bar (Int)
-        fill        - Optional  : bar fill character (Str)
-    """
-    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
-    filledLength = int(length * iteration // total)
-    bar = fill * filledLength + '-' * (length - filledLength)
-    print('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
-    # Print New Line on Complete
-    if iteration == total: 
-        print()
     
 # Print a Break
 def brk(char = "-", n = 50):
@@ -484,21 +413,21 @@ def brk(char = "-", n = 50):
 # Generate a Simple Inline Plot
 def simpleInlinePlot (x, y, title = "", xlabel = "", ylabel = "", color = "green", plotType = "plot", size = (8, 8), dpi = 300, domain = [], range = [], opacity = 0.1, bins = 1000):
     # Setup
-    fig = Plot.figure(1, size, dpi = dpi)
+    fig = matplotlib.pylot.figure(1, size, dpi = dpi)
     domain = domain if len(domain) == 2 else [min(x), max(x)]
     range  = range if len(range) == 2 else [min(y), max(y)]
     # Plot
-    Plot.subplot(1,1,1)
+    matplotlib.pylot.subplot(1,1,1)
     if plotType == "hist":
         getattr(Plot, plotType)(y, bins = bins, color=color, lw=2, alpha = opacity)
     if plotType == "plot":
-        Plot.xlim(domain)
-        Plot.ylim(range)
+        matplotlib.pylot.xlim(domain)
+        matplotlib.pylot.ylim(range)
         getattr(Plot, plotType)(x, y, color=color, lw=2, alpha = opacity)
-        Plot.plot([0, 1], [0, 95000], color='navy', lw=2, linestyle='--')
+        matplotlib.pylot.plot([0, 1], [0, 95000], color='navy', lw=2, linestyle='--')
     if plotType == "scatter":
-        Plot.xlim(domain)
-        Plot.ylim(range)
+        matplotlib.pylot.xlim(domain)
+        matplotlib.pylot.ylim(range)
         getattr(Plot, plotType)(x, y, color = color, alpha = opacity)
     axis = fig.add_subplot(1,1,1)
     axis.set_title(title, fontsize = 12)
@@ -506,7 +435,7 @@ def simpleInlinePlot (x, y, title = "", xlabel = "", ylabel = "", color = "green
     axis.set_ylabel(ylabel, fontsize = 10)
     if plotType == "bar":
         assert len(x) == len(y)
-        xs = [int(n) for n in Np.arange(len(x))]
+        xs = [n for n in range(len(x))]
         rects = axis.bar(xs, y, color = color, align = "center")
         i = 0
         for rect in rects:
@@ -514,22 +443,6 @@ def simpleInlinePlot (x, y, title = "", xlabel = "", ylabel = "", color = "green
             label = x[i]
             axis.text(rect.get_x() + (rect.get_width() / 2), 1.05 * h, label, ha = 'center', va = 'bottom')
             i += 1
-    
-    return fig
-
-# Generate a Simple Histogram Plot
-def simpleHist (x, bins = 100, pdf = False, title = "", xlabel = "", ylabel = "", color = "green", opacity = 1.0, size = (8, 8), dpi = 300):
-    norm = 1 if pdf else 0
-    # Setup
-    fig = Plot.figure(1, size, dpi = dpi)
-    # Plot
-    Plot.subplot(1,1,1)
-    Plot.hist(x, bins = bins, normed = norm, color = color, alpha = opacity)
-    # Axis Stuff
-    axis = fig.add_subplot(1,1,1)
-    axis.set_title(title, fontsize = 12)
-    axis.set_xlabel(xlabel, fontsize = 10)
-    axis.set_ylabel(ylabel, fontsize = 10)
     
     return fig
     
@@ -541,7 +454,7 @@ def scatterXY (analysis, x, y, color = "green", opacity = 0.5, n = 100, skip = 1
     
 def plotCurve (conditions, labels, xKey = "", yKey = "", xLabel = "", yLabel = "", title = "Title", colors = ["green", "orange", "red", "purple", "blue"], diag = "tl", method = "plot", legendLoc = "lower left"):
     # Setup
-    fig         = Plot.figure(1, (8, 8), dpi = 300)
+    fig         = matplotlib.pylot.figure(1, (8, 8), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_xlabel(xLabel, fontsize = 10)
     axis.set_ylabel(yLabel, fontsize = 10)
@@ -562,18 +475,18 @@ def plotCurve (conditions, labels, xKey = "", yKey = "", xLabel = "", yLabel = "
         
     # Plot Diagonal
     if diag is "tl":
-        Plot.plot((1, 0), color='navy', lw=1, linestyle='--')
+        matplotlib.pylot.plot((1, 0), color='navy', lw=1, linestyle='--')
     if diag is "tr":
-        Plot.plot((0, 1), color='navy', lw=1, linestyle='--')
-    Plot.ylim([0, 1])
-    Plot.xlim([0, 1])
-    Plot.title(title, fontsize = 12)
+        matplotlib.pylot.plot((0, 1), color='navy', lw=1, linestyle='--')
+    matplotlib.pylot.ylim([0, 1])
+    matplotlib.pylot.xlim([0, 1])
+    matplotlib.pylot.title(title, fontsize = 12)
     # Plot Legend
     if method is "scatter":
-        Plot.legend(legendKeys, nLabels, loc = legendLoc, fontsize = 10)
+        matplotlib.pylot.legend(legendKeys, nLabels, loc = legendLoc, fontsize = 10)
     else:
-        handles = [mpatches.Patch(color = key[0]._color, label = label) for key, label in zip(legendKeys, nLabels)]
-        Plot.legend(handles=handles, loc = legendLoc, fontsize = 10)
+        handles = [matplotlib.patches.Patch(color = key[0]._color, label = label) for key, label in zip(legendKeys, nLabels)]
+        matplotlib.pylot.legend(handles=handles, loc = legendLoc, fontsize = 10)
     # Save & Render
     
     return fig
@@ -582,7 +495,7 @@ def plotCurve (conditions, labels, xKey = "", yKey = "", xLabel = "", yLabel = "
 def plotMaximized (analysis, x, y, color = "red", n = 100, skip = 1):
     combinations = [analysis[threshold][x] + analysis[threshold][y] for threshold in range(0, n, skip)]
     index, combination = max(enumerate(combinations), key = itemgetter(1))
-    return Plot.scatter(analysis[index][x], analysis[index][y], s=200, facecolors = 'none', edgecolors = color)
+    return matplotlib.pylot.scatter(analysis[index][x], analysis[index][y], s=200, facecolors = 'none', edgecolors = color)
 
 # Get Analysis of Threshold with Maximum Combined Metrics (e.g. sensitivity and specificity or tpr and fpr)
 def getMaximizedAnalysis (analysis, x, y, skip = 1):
@@ -629,7 +542,7 @@ def multiCurve (c1Tups, c2Tups, truthSet, c1Map, c2Map, subsetKey = "", c1Label 
         c2Analysis = generateAnalyses(c2Hm, truthSet, "TLOD")
         analyses.append([c1Analysis, c2Analysis])
     # Plot Setup
-    fig         = Plot.figure(1, (8, 8), dpi = 300)
+    fig         = matplotlib.pylot.figure(1, (8, 8), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_xlabel(xLabel, fontsize = 10)
     axis.set_ylabel(yLabel, fontsize = 10)
@@ -648,41 +561,40 @@ def multiCurve (c1Tups, c2Tups, truthSet, c1Map, c2Map, subsetKey = "", c1Label 
             j += 1
         i += 1
     if diag is "tl":
-        Plot.plot((1, 0), color='navy', lw=1, linestyle='--')
+        matplotlib.pylot.plot((1, 0), color='navy', lw=1, linestyle='--')
     if diag is "tr":
-        Plot.plot((0, 1), color='navy', lw=1, linestyle='--')
-    Plot.ylim([0, 1])
-    Plot.xlim([0, 1])
-    Plot.title(title, fontsize = 12)
+        matplotlib.pylot.plot((0, 1), color='navy', lw=1, linestyle='--')
+    matplotlib.pylot.ylim([0, 1])
+    matplotlib.pylot.xlim([0, 1])
+    matplotlib.pylot.title(title, fontsize = 12)
     if method is "scatter":
-        Plot.legend(legendKeys, labels, loc = legendLoc, fontsize = 10)
+        matplotlib.pylot.legend(legendKeys, labels, loc = legendLoc, fontsize = 10)
     else:
         labels = [c1Label, c2Label]
-        handles = [mpatches.Patch(color = key[0]._color, label = label) for key, label in zip(legendKeys, labels)]
-        Plot.legend(handles=handles, loc = legendLoc, fontsize = 10)
+        handles = [matplotlib.patches.Patch(color = key[0]._color, label = label) for key, label in zip(legendKeys, labels)]
+        matplotlib.pylot.legend(handles=handles, loc = legendLoc, fontsize = 10)
     
     return fig
 
 def plotQualityScores (ref, alt, title = "Title"):
     # Setup
-    fig         = Plot.figure(1, (16, 12), dpi = 300)
+    fig         = matplotlib.pylot.figure(1, (16, 12), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_ylabel('Quality Score', fontsize = 10)
     axis.set_xlabel('Variant Allele', fontsize = 10)
     # Scatter
-    r = Plot.scatter(range(len(ref)), ref, color = "orange", alpha = 0.2)
-    a = Plot.scatter(range(len(alt)), alt, color = "blue", alpha = 0.2)
+    r = matplotlib.pylot.scatter(range(len(ref)), ref, color = "orange", alpha = 0.2)
+    a = matplotlib.pylot.scatter(range(len(alt)), alt, color = "blue", alpha = 0.2)
     # Plot
-    Plot.ylim([0, 40])
-    Plot.xlim([0, len(ref)])
-    Plot.title(title, fontsize = 12)
-    Plot.legend((r, a), ('Reference', 'Alternate'), loc = 'lower right', fontsize = 10)
+    matplotlib.pylot.ylim([0, 40])
+    matplotlib.pylot.xlim([0, len(ref)])
+    matplotlib.pylot.title(title, fontsize = 12)
+    matplotlib.pylot.legend((r, a), ('Reference', 'Alternate'), loc = 'lower right', fontsize = 10)
     
     return fig
     
 # Plot Mutect Filters by Frequency
 def plotFilterFrequencies (hashmap, title = "", xlabel = "", ylabel = ""):
-    from collections import defaultdict
     # Which Filters are Catching Variants?
     counts = defaultdict(int)
     for md5hash, record in hashmap.items():
@@ -705,7 +617,7 @@ def plotMetrics(analysis, metrics = ["sensitivity", "specificity"], reduce = lam
             else:
                 metricsDict[metric].append(records[metric])
     index = 0
-    figure = Plot.figure(1, (8, 8), dpi = 300) 
+    figure = matplotlib.pylot.figure(1, (8, 8), dpi = 300) 
     axis = figure.add_subplot(1,1,1)
     axis.set_title(title, fontsize = 12)
     axis.set_xlabel("Threshold", fontsize = 10)
@@ -717,9 +629,9 @@ def plotMetrics(analysis, metrics = ["sensitivity", "specificity"], reduce = lam
         label = metric
         x = thresholds
         y = values
-        Plot.subplot(1,1,1)
-        Plot.plot(x, y, label = label, color = color, alpha = 0.6, lw = 2)
-        Plot.legend(fontsize = 10, loc = "upper center", ncol = 5, bbox_to_anchor=(0.5, -0.05))
+        matplotlib.pylot.subplot(1,1,1)
+        matplotlib.pylot.plot(x, y, label = label, color = color, alpha = 0.6, lw = 2)
+        matplotlib.pylot.legend(fontsize = 10, loc = "upper center", ncol = 5, bbox_to_anchor=(0.5, -0.05))
         index += 1
     return fig
 
@@ -759,8 +671,8 @@ if __name__ == "__main__":
     # Print Configuration
     print("%s – %s – %s" % (dataset, condition, selected))
 
-    # VCF Locations   Folder     File
-    condition1VCF  = "vcf/synthetic.challenge.%s.%s.default.nobqsr.raw.snps.indels.vcf" % (dataset, condition)
+    # VCF Locations
+    condition1VCF  = "vcf/synthetic.challenge.%s.%s.default.%s.raw.snps.indels.vcf" % (dataset, condition, subcondition)
     condition2VCF  = "vcf/synthetic.challenge.%s.%s.default.bqsr.raw.snps.indels.vcf" % (dataset, condition)
     truthVCF       = "vcf/truth-set/%s" % selected
 
@@ -1109,7 +1021,7 @@ if __name__ == "__main__":
     #
 
     # Setup
-    fig         = Plot.figure(1, (8, 8), dpi = 300)
+    fig         = matplotlib.pylot.figure(1, (8, 8), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_ylabel('Sensitivity', fontsize = 10)
     axis.set_xlabel('Specificity', fontsize = 10)
@@ -1123,11 +1035,11 @@ if __name__ == "__main__":
     # Annotate Maximized Threshold
     m  = plotMaximized(condition1Analysis, "specificity", "sensitivity")
     # Plot
-    Plot.plot((1, 0), color='navy', lw=1, linestyle='--')
-    Plot.ylim([0, 1])
-    Plot.xlim([0, 1])
-    Plot.title("Sensitivity Specificity Curve – Tumor LOD Thresholds – Passing Variants (No BQSR v. BQSR)", fontsize = 12)
-    Plot.legend((c1, c2), (c1Label, c2Label), loc = 'lower left', fontsize = 10)
+    matplotlib.pylot.plot((1, 0), color='navy', lw=1, linestyle='--')
+    matplotlib.pylot.ylim([0, 1])
+    matplotlib.pylot.xlim([0, 1])
+    matplotlib.pylot.title("Sensitivity Specificity Curve – Tumor LOD Thresholds – Passing Variants (No BQSR v. BQSR)", fontsize = 12)
+    matplotlib.pylot.legend((c1, c2), (c1Label, c2Label), loc = 'lower left', fontsize = 10)
     fig.savefig(outputdir + "/senspec-passing-optimal-thresh.pdf", bbox_inches='tight')
     fig.clf()    
         
@@ -1183,7 +1095,7 @@ if __name__ == "__main__":
     #
 
     # Setup
-    fig         = Plot.figure(1, (8, 8), dpi = 300)
+    fig         = matplotlib.pylot.figure(1, (8, 8), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_ylabel('Sensitivity', fontsize = 10)
     axis.set_xlabel('Specificity', fontsize = 10)
@@ -1197,11 +1109,11 @@ if __name__ == "__main__":
     # Annotate Maximized Threshold
     m  = plotMaximized(condition1Analysis, "specificity", "sensitivity")
     # Plot
-    Plot.plot((1, 0), color='navy', lw=1, linestyle='--')
-    Plot.ylim([0, 1])
-    Plot.xlim([0, 1])
-    Plot.title("Sensitivity Specificity Curve – Tumor LOD Thresholds – All Variants (No BQSR v. BQSR)", fontsize = 12)
-    Plot.legend((c1, c2), (c1Label, c2Label), loc = 'lower left', fontsize = 10)
+    matplotlib.pylot.plot((1, 0), color='navy', lw=1, linestyle='--')
+    matplotlib.pylot.ylim([0, 1])
+    matplotlib.pylot.xlim([0, 1])
+    matplotlib.pylot.title("Sensitivity Specificity Curve – Tumor LOD Thresholds – All Variants (No BQSR v. BQSR)", fontsize = 12)
+    matplotlib.pylot.legend((c1, c2), (c1Label, c2Label), loc = 'lower left', fontsize = 10)
     fig.savefig(outputdir + "/senspec-all-optimal-thresh.pdf", bbox_inches='tight')
     fig.clf()
         
