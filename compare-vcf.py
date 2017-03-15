@@ -943,37 +943,6 @@ if __name__ == "__main__":
         ]
     ]
 
-    # Generate Analyses
-    analysisSets = []
-    for combination in combinations:
-        for truth, condition in zip(trCombinations, combination):
-            a = generateAnalysis(condition["data"], truth)
-            analysisSets.append({"label": condition["label"], "analysis": a})
-
-    # Print / Write Analyses
-    with open(outputdir + "/mutect2-performance-lfv", "w") as output:
-        i = 0
-        for analysisSet in analysisSets:
-            lines = [
-                "Mutect2 Performance: %s" % analysisSet["label"],
-                "\tCalled by MuTect2 (TPR): %.4f%%" % analysisSet["analysis"]["tpr"],
-                "\tMissed by MuTect2 (FNR): %.4f%%" % analysisSet["analysis"]["fnr"],
-                "\tTNR:                     %.4f%%" % analysisSet["analysis"]["tnr"],
-                "\tFPR:                     %.4f%%" % analysisSet["analysis"]["fpr"],
-                "\tSensitivity:             %.4f%%" % analysisSet["analysis"]["sensitivity"],
-                "\tSpecificity:             %.4f%%" % analysisSet["analysis"]["specificity"],
-                "\tAccuracy:                %.4f%%" % analysisSet["analysis"]["accuracy"],
-                "n = %d" % analysisSet["analysis"]["n"],
-                "--------------------------------------"
-            ]
-            for line in lines:
-                output.write(line)
-                print(line)
-            i += 1
-            if (i % 3 == 0):
-                output.write("==================================================")
-                print("==================================================")
-
 #
 # Curve Analysis
 #

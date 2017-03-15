@@ -1,6 +1,7 @@
 #! /home/users/cordier/.linuxbrew/bin/python3
 
 # Imports & Methods
+from operator import itemgetter
 from collections import OrderedDict
 import operator, hashlib
 import vcf as VCF
@@ -36,8 +37,31 @@ def hashVariants (records, props, algorithm = "md5", collisionCheck = False):
         assert (len(hashMap.keys()) == count), print("Warning: Collision occurred (%s). Try using a difference hashing function.\nAvailable algorithms: %s\n" % (algorithm, ", ".join(hashlib.algorithms_available)))
     return hashMap
 
+# Get Format Data From Records in Records HashMap
+def subsetHashMapByFormatRange (hashMap, rangeTuple, key = "AF", sampleIdx = 0):
+    subset, excluded = {}, {}
+    for md5, record in hashMap.items():
+        sample = record.samples[sampleIdx]
+        if sample[key]:
+            if type(sample[key]) is list:
+                add = sum(sample[key])
+                if rangeTuple[0] == 0:
+                    subset[md5] = record
+                elif add > rangeTuple[0] and add <= rangeTuple[1]:
+                    subset[md5] = record
+                else:
+                    excluded[md5] = record
+            else:
+                if sample[key] > rangeTuple[0] and sample[key] <= rangeTuple[1]:
+                    subset[md5] = record
+                else:
+                    excluded[md5] = record
+        else:
+            excluded[md5] = record
+    return subset, excluded
+
 # Generate Analysis From Variant Hashmaps
-def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation = "<", threshold = 100):
+def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation = "<", threshold = 10):
     
     # Map Operators
     operators = {
@@ -107,6 +131,7 @@ def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation 
     dorDen                    = tn / tn if tn > 0 else 1.0
     analysis["diagnosticOR"]  = dorNum / dorDen
     analysis["n"]             = tp + fp + tn + fn
+    analysis["threshold"]     = threshold
     return analysis
 
 # Compute Lots of Statistics n' Stuff
@@ -117,6 +142,13 @@ def generateAnalyses (conditionHashMap, truthHashMap, metricKey = "TLOD", thresh
     for threshold in range(0, thresholds, skip):
         analyses[threshold] = generateAnalysis(conditionHashMap, truthHashMap, metricKey = metricKey, threshold = threshold)
     return analyses
+
+# Get Analysis of Threshold with Maximum Combined Metrics (e.g. sensitivity and specificity or tpr and fpr)
+def getMaximizedAnalysis (analysis, x, y, skip = 1):
+    combinations = [analysis[threshold][x] + analysis[threshold][y] for threshold in range(0, len(analysis), skip)]
+    index, combination = max(enumerate(combinations), key = itemgetter(1))
+    threshold = index + 1
+    return threshold, analysis[threshold]
 
 #
 # File Writing
@@ -223,37 +255,50 @@ if __name__ == "__main__":
         "synthetic.challenge.set2.tumor.all.truth.vcf",
         "synthetic.challenge.set3.tumor.20pctmasked.truth.vcf"
     ]
-    matrices = []
     uniqueProps = ["CHROM", "POS", "REF", "ALT"] # Variant Record Properties to Define Uniqueness
-
-    for dataset in metadata["datasets"]:
-        # Set Active Truth & Open VCF
-        truthActive = [truthset for truthset in truthsets if dataset["key"] in truthset][0]
-        with open("vcf/truth-set/%s" % truthActive, 'r') as truthHandle:
-            print("Status: Hashing Truth Set – %s" % truthActive)
-            truthReader = VCF.Reader(truthHandle)
-            truthSet = hashVariants(truthReader, uniqueProps, algorithm = "sha1").keys()
-            i, total = 0, len(metadata["conditions"]) * len(metadata["subconditions"])
-            for condition in metadata["conditions"]:
-                for subcondition in metadata["subconditions"]:
-                    # Progress Bar
-                    printProgressBar(i, total, prefix = "Computing Matrix:", suffix = "%s - %s - %s" % (dataset["name"], condition["name"], subcondition["name"]))
-                    # Set Active Condition & Open VCF
-                    conditionActive = "vcf/synthetic.challenge.%s.%s.default.%s.raw.snps.indels.vcf" % (dataset["key"], condition["key"], subcondition["key"])
-                    with open(conditionActive) as conditionHandle:
-                        conditionReader = VCF.Reader(conditionHandle)
-                        conditionHashMap = hashVariants(conditionReader, uniqueProps, algorithm = "sha1")
-                        analyses = generateAnalyses(conditionHashMap, truthSet, metricKey = "TLOD", thresholds = 100, skip = 1)
-                        label = dataset["name"] + " \n " + condition["name"] + " \n " + subcondition["name"]
-                        metakey = dataset["key"] + condition["key"] + subcondition["key"]
-                        matrices.append({
-                            "label"     : label,
-                            "key"       : metakey,
-                            "analyses"  : analyses
-                        })
-                    i += 1
-                    printProgressBar(i, total, prefix = "Computing Matrices:", suffix = "%s - %s - %s" % (dataset["name"], condition["name"], subcondition["name"]))
-    writeJSON(matrices, "heatmaps.json")
+    for variantRange in ["lfvranges", "allranges"]:
+        conditions = []
+        for dataset in metadata["datasets"]:
+            # Set Active Truth & Open VCF
+            truthActive = [truthset for truthset in truthsets if dataset["key"] in truthset][0]
+            with open("vcf/truth-set/%s" % truthActive, 'r') as truthHandle:
+                print("Status: Hashing Truth Set – %s" % truthActive)
+                truthReader = VCF.Reader(truthHandle)
+                truthSet = hashVariants(truthReader, uniqueProps, algorithm = "sha1").keys()
+                i, total = 0, len(metadata["conditions"]) * len(metadata["subconditions"])
+                for condition in metadata["conditions"]:
+                    for subcondition in metadata["subconditions"]:
+                        data = {}
+                        label = "%s\n%s\n%s" % (dataset["name"], condition["name"], subcondition["name"])
+                        metakey = "%s-%s-%s" % (dataset["key"], condition["key"], subcondition["key"])
+                        # Progress Bar
+                        printProgressBar(i, total, prefix = "Computing Matrix:", suffix = "%s - %s - %s" % (dataset["name"], condition["name"], subcondition["name"]))
+                        # Set Active Condition
+                        conditionActive = "vcf/synthetic.challenge.%s.%s.default.%s.raw.snps.indels.vcf" % (dataset["key"], condition["key"], subcondition["key"])
+                        with open(conditionActive) as conditionHandle:
+                            # Read in Condition VCF & Generate Variant HashMap
+                            conditionReader = VCF.Reader(conditionHandle)
+                            conditionHashMap = hashVariants(conditionReader, uniqueProps, algorithm = "sha1")
+                            # Generate Analyses by tLOD 0 - 100, Find Optimal Threshold
+                            data["label"] = label
+                            data["metakey"] = metakey
+                            data["aucAnalyses"] = generateAnalyses(conditionHashMap, truthSet, metricKey = "TLOD", thresholds = 100, skip = 1)
+                            data["maxThreshold"], maximizedAnalysis = getMaximizedAnalysis(data["aucAnalyses"], "sensitivity", "specificity")
+                            data["vafRanges"] = metadata[variantRange]
+                            # Subset Condition HashMap by VAF Range, Generate Analysis for Range at Optimal Threshold
+                            analyses = []
+                            for a, b in metadata[variantRange]:
+                                subsetHashMap, excluded = subsetHashMapByFormatRange(conditionHashMap, (float(a), float(b)))
+                                analysis = {
+                                    "vafrange" : [float(a), float(b)],
+                                    "analysis" : generateAnalysis(subsetHashMap, truthSet, threshold = data["maxThreshold"])
+                                }
+                                analyses.append(analysis)
+                            data["maxAnalyses"] = analyses
+                        i += 1
+                        printProgressBar(i, total, prefix = "Computing Matrices:", suffix = "%s - %s - %s" % (dataset["name"], condition["name"], subcondition["name"]))
+                        conditions.append(data)
+        writeJSON(conditions, "%s-heatmaps.json" % variantRange)
 
 else:
     pass
