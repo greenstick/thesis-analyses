@@ -1,3 +1,3 @@
-# Jupyter Notebooks for Thesis VCF Analyses
+# Scripts for Thesis VCF Analyses
 
-See the [Thesis Pipeline](https://github.com/greenstick/thesis-pipeline) repository for the software that generated the VCF files (not included in this repository).
+See the [Thesis Pipeline](https://github.com/greenstick/thesis-pipeline) repository for the software that generated the VCF files.
