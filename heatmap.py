@@ -49,18 +49,18 @@ if __name__ == "__main__":
     allRanges = argsDict["all"]
     lfvRanges = argsDict["lfv"]
     outputdir = argsDict["output"]
-    heatMapRanges = []
+    variantRanges = []
 
     # Input Resolution
     if allRanges is False and lfvRanges is False:
         print("Status: No VAF Range Provided (--all or --lfv), Defaulting to All VAF Ranges")
-        heatMapRanges.append("allranges")
+        variantRanges.append("allranges")
     if outputdir is None:
         outputdir = "output"
     if allRanges:
-        heatMapRanges.append("allranges")
+        variantRanges.append("allranges")
     if lfvRanges:
-        heatMapRanges.append("lfvranges")
+        variantRanges.append("lfvranges")
 
     metadata = {
 
@@ -116,8 +116,8 @@ if __name__ == "__main__":
     # Extra Data & Generate Heat Map
     #
 
-    for heatMapRange in heatMapRanges:
-        vafStr = heatMapRange[0:3]
+    for variantRange in variantRanges:
+        vafStr = variantRange[0:3]
 
         # Structure Matrix & Labels
         xLabels = []
@@ -125,7 +125,7 @@ if __name__ == "__main__":
         for dataset in metadata["datasets"]:
             for condition in metadata["conditions"]:
                 for subcondition in metadata["subconditions"]:
-                    xLabel = dataset["name"] + " \n " + condition["name"] + " \n " + subcondition["name"]
+                    xLabel = dataset["name"] + "\n" + condition["name"] + "\n" + subcondition["name"]
                     xLabels.append(xLabel)
                     matrix[dataset["key"] + condition["key"] + subcondition["key"]] = []
 
@@ -134,10 +134,11 @@ if __name__ == "__main__":
             for condition in metadata["conditions"]:
                 bqsr = matrix[dataset["key"] + condition["key"] + "bqsr"]
                 nobqsr = matrix[dataset["key"] + condition["key"] + "nobqsr"]
-                for vafrange in metadata[heatMapRange]:
+                for vafrange in metadata[variantRange]:
                     lines = pdfToText("output/%s/%s/senspec-%s-%s-all-variants.pdf" % (dataset["key"], condition["key"], float(vafrange[0]), float(vafrange[1]))).split("\n")
                     for line in lines:
                         if "AUC" in line:
+                            # No BQSR Processed First
                             if len(nobqsr) == len(bqsr):
                                 n = re.sub(r"^[No\sBQSR]{4,7},\sn\s=\s", "", line[0:-15])
                                 auc = float(line[-7:-1])
@@ -147,17 +148,71 @@ if __name__ == "__main__":
                                 auc = float(line[-7:-1])
                                 bqsr.append(auc)
 
+        #
+        # Landscape
+        #
+
         # Coerce to Data Frame
-        df = pd.DataFrame(matrix).T
+        df = pd.DataFrame(matrix)
 
         # Colors
-        linear_cm = LinearSegmentedColormap.from_list("custom", ["#FFFFFF", "#108070"], N=256, gamma = 1.0)
+        linear_cm = LinearSegmentedColormap.from_list("custom", ["#FFFFFF", "#108070"], N = 256, gamma = 1.0)
         colors = cm.get_cmap(linear_cm)
 
         # Plot it out
         fig, ax = plt.subplots()
-        heatmap = ax.pcolor(df, cmap=colors, alpha=0.8)
-        # plt.colorbar(heatmap)
+        heatmap = ax.pcolor(df, cmap = colors, alpha = 0.8)
+
+        # Format
+        fig = plt.gcf()
+        fig.set_size_inches(12, 8)
+
+        # turn off the frame
+        ax.set_frame_on(False)
+
+        # put the major ticks at the middle of each cell
+        ax.set_yticks(np.arange(df.shape[0]) + 0.5, minor = False)
+        ax.set_xticks(np.arange(df.shape[1]) + 0.1, minor = False)
+
+        # want a more natural, table-like display
+        ax.invert_yaxis()
+        ax.xaxis.tick_top()
+
+        # Set Labels
+        ax.set_xticklabels(xLabels, minor = False, fontsize = 5)
+        ax.set_yticklabels(["%s - %s" % tup for tup in metadata[variantRange]], minor = False, fontsize = 6)
+
+        # Text Styling
+        plt.xticks(ha = "left")
+        ax.grid(False)
+
+        # Turn off all the ticks
+        ax = plt.gca()
+
+        for t in ax.xaxis.get_major_ticks():
+            t.tick1On = False
+            t.tick2On = False
+        for t in ax.yaxis.get_major_ticks():
+            t.tick1On = False
+            t.tick2On = False
+        fig.savefig("output/%s-%s-heatmap-landscape.pdf" % ("ss-auc", vafStr), bbox_inches = 'tight', transparent = True)
+        # plt.show()
+        plt.clf()
+
+        #
+        # Portrait
+        #
+
+        # Coerce to Data Frame
+        df = pd.DataFrame(matrix).T
+
+        # Colors
+        linear_cm = LinearSegmentedColormap.from_list("custom", ["#FFFFFF", "#108070"], N = 256, gamma = 1.0)
+        colors = cm.get_cmap(linear_cm)
+
+        # Plot it out
+        fig, ax = plt.subplots()
+        heatmap = ax.pcolor(df, cmap = colors, alpha=0.8)
 
         # Format
         fig = plt.gcf()
@@ -167,8 +222,8 @@ if __name__ == "__main__":
         ax.set_frame_on(False)
 
         # put the major ticks at the middle of each cell
-        ax.set_yticks(np.arange(df.shape[0]) + .5, minor=False)
-        ax.set_xticks(np.arange(df.shape[1]) + .9, minor=False)
+        ax.set_yticks(np.arange(df.shape[0]) + .5, minor = False)
+        ax.set_xticks(np.arange(df.shape[1]) + .5, minor = False)
 
         # want a more natural, table-like display
         ax.invert_yaxis()
@@ -176,7 +231,7 @@ if __name__ == "__main__":
 
         # Set Labels
         ax.set_yticklabels(xLabels, minor = False, fontsize = 6)
-        ax.set_xticklabels(["%s - %s" % tup for tup in metadata[heatMapRange]], minor = False, fontsize = 6)
+        ax.set_xticklabels(["%s - %s" % tup for tup in metadata[variantRange]], minor = False, fontsize = 6)
 
         # Text Styling
         plt.xticks(rotation = 45)
@@ -191,8 +246,8 @@ if __name__ == "__main__":
         for t in ax.yaxis.get_major_ticks():
             t.tick1On = False
             t.tick2On = False
-        fig.savefig("output/%s-heatmap.pdf" % vafStr)
-        plt.show()
-
+        fig.savefig("output/%s-%s-heatmap-portrait.pdf" % ("ss-auc", vafStr), bbox_inches = 'tight', transparent = True)
+        # plt.show()
+        plt.clf()
 else:
     pass

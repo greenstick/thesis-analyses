@@ -6,20 +6,23 @@ from collections import defaultdict
 from operator import itemgetter
 from statistics import mean, median, mode, stdev, variance
 from sklearn import metrics
-import operator, argparse, matplotlib, hashlib
+import operator, argparse, matplotlib, hashlib, random, math, multiprocessing
 import vcf as VCF
 
 # Allows Matplotlib to Render on Machine With No Display
 matplotlib.use('Agg')
+
+import matplotlib.pyplot as plot
+
 # Set matplotlib style
-matplotlib.style.use('ggplot')
+plot.style.use('ggplot')
 
 #
 # Data Structuring
 #
 
 # Variant Hashing Function
-def hashVariants (records, props, algorithm = "md5", collisionCheck = False):
+def hashVariants (records, props = ["CHROM", "POS", "REF", "ALT"], algorithm = "md5", collisionCheck = False):
     """
     
     Hash VCF Records and Check for Collisions.
@@ -97,6 +100,8 @@ def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation 
     analysis["tn"] = tn
     analysis["fp"] = fp
     analysis["fn"] = fn
+    analysis["allpositives"] = tp + fn
+    analysis["allnegatives"] = tn + fp
     # Ternary Operations to Avoid Function Limits for Statistics (due to 0 values)
     analysis["sensitivity"]   = tp / (tp + fn) if tp > 0 else 0.0
     analysis["specificity"]   = tn / (tn + fp) if tn > 0 else 0.0
@@ -120,18 +125,34 @@ def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation 
     return analysis
 
 # Compute Lots of Statistics n' Stuff
-def generateAnalyses (conditionHashMap, truthHashMap, metricKey = "TLOD", thresholds = 100, skip = 1):
+def generateAnalyses (conditionHashMap, trHashMap, metricKey = "TLOD", thresholds = 100, skip = 1):
     # Setup Data Structures
     analyses   = OrderedDict()
     # Use Thresholds to Classify Positive or Negative 
     for threshold in range(0, thresholds, skip):
-        analyses[threshold] = generateAnalysis(conditionHashMap, truthHashMap, metricKey = metricKey, threshold = threshold)
+        analyses[threshold] = generateAnalysis(conditionHashMap, trHashMap, metricKey = metricKey, threshold = threshold)
     return analyses
+
+# Match Condition and Truth Set Variants Return Their Allele Frequencies
+def matchConditionVAFs (conditionHashmap, trHashMap):
+    result, excluded, conditionKeys = [], [], set(conditionHashmap.keys())
+    for key, record in trHashMap.items():
+        if key in conditionKeys:
+            try:
+                truthVAF = record.INFO["VAF"] 
+                conditionVAF = conditionHashmap[key].samples[0]["AF"]
+                result.append({
+                    "key"       : key,
+                    "truth"     : truthVAF,
+                    "condition" : conditionVAF
+                })
+            except:
+                excluded.append(key)
+    return result, excluded
 
 #
 # Variant HashMap Subsetting Functions
 #
-
 
 def subsetHashMapByKeys (hashMap, keys, isfound = True):
     subset = {}
@@ -271,12 +292,16 @@ def quartiles(vector):
 # Generate Basic Statistics Summary
 def stats(vector, title = "Title", output = ""):
     lowerQ, upperQ = quartiles(vector)
+    try:
+        vecMode = mode(vector)
+    except:
+        vecMode = "No Unique Mode"
     lines = [
         "%s\n" % title,
         "Measures of Central Tendency",
         "\tMean          %s"  % mean(vector),
         "\tMedian        %s"  % median(vector),
-        "\tMode          %s"  % mode(vector),
+        "\tMode          %s"  % vecMode,
         "Measures of Spread",
         "\tstdev         %s"  % stdev(vector),
         "\tvariance      %s"  % variance(vector),
@@ -404,44 +429,47 @@ def getRanges (splits):
     
 # Print a Break
 def brk(char = "-", n = 50):
-    print("\n" + ("-" * n) + "\n")    
+    print("\n" + ("-" * n) + "\n")
 
 #
 # Plotting
 #
 
 # Generate a Simple Inline Plot
-def simpleInlinePlot (x, y, title = "", xlabel = "", ylabel = "", color = "green", plotType = "plot", size = (8, 8), dpi = 300, domain = [], range = [], opacity = 0.1, bins = 1000):
+def simpleInlinePlot (x, y, title = "", xlabel = "", ylabel = "", color = "green", plotType = "plot", size = (8, 8), dpi = 300, domainX = [], rangeY = [], opacity = 0.1, bins = 1000):
     # Setup
-    fig = matplotlib.pylot.figure(1, size, dpi = dpi)
-    domain = domain if len(domain) == 2 else [min(x), max(x)]
-    range  = range if len(range) == 2 else [min(y), max(y)]
+    fig = plot.figure(1, size, dpi = dpi)
+    domainX = domainX if len(domainX) == 2 else [min(x), max(x)]
+    rangeY  = rangeY if len(rangeY) == 2 else [min(y), max(y)]
     # Plot
-    matplotlib.pylot.subplot(1,1,1)
+    plot.subplot(1,1,1)
     if plotType == "hist":
-        getattr(Plot, plotType)(y, bins = bins, color=color, lw=2, alpha = opacity)
+        getattr(plot, plotType)(y, bins = bins, color=color, lw=2, alpha = opacity)
     if plotType == "plot":
-        matplotlib.pylot.xlim(domain)
-        matplotlib.pylot.ylim(range)
-        getattr(Plot, plotType)(x, y, color=color, lw=2, alpha = opacity)
-        matplotlib.pylot.plot([0, 1], [0, 95000], color='navy', lw=2, linestyle='--')
+        plot.xlim(domainX)
+        plot.ylim(rangeY)
+        getattr(plot, plotType)(x, y, color=color, lw=2, alpha = opacity)
+        plot.plot([0, 1], [0, 95000], color='navy', lw=2, linestyle='--')
     if plotType == "scatter":
-        matplotlib.pylot.xlim(domain)
-        matplotlib.pylot.ylim(range)
-        getattr(Plot, plotType)(x, y, color = color, alpha = opacity)
+        plot.xlim(domainX)
+        plot.ylim(rangeY)
+        getattr(plot, plotType)(x, y, color = color, alpha = opacity)
     axis = fig.add_subplot(1,1,1)
     axis.set_title(title, fontsize = 12)
     axis.set_xlabel(xlabel, fontsize = 10)
     axis.set_ylabel(ylabel, fontsize = 10)
     if plotType == "bar":
-        assert len(x) == len(y)
-        xs = [n for n in range(len(x))]
+        assert len(x) == len(y), "Error: X and Y vectors should be the same length (simpleInlinePlot)."
+        plot.xlim(domainX)
+        plot.ylim(rangeY)
+        plot.xticks(rotation = 45, ha = "left")
+        xs = list(range(len(x)))
         rects = axis.bar(xs, y, color = color, align = "center")
         i = 0
         for rect in rects:
             h = rect.get_height()
             label = x[i]
-            axis.text(rect.get_x() + (rect.get_width() / 2), 1.05 * h, label, ha = 'center', va = 'bottom')
+            axis.text(rect.get_x() + (rect.get_width() / 2), h + 8, label, ha = 'center', va = 'bottom')
             i += 1
     
     return fig
@@ -450,11 +478,11 @@ def simpleInlinePlot (x, y, title = "", xlabel = "", ylabel = "", color = "green
 def scatterXY (analysis, x, y, color = "green", opacity = 0.5, n = 100, skip = 1, method = "scatter"):
     X = [analysis[threshold][x] for threshold in range(0, n, skip)]
     Y = [analysis[threshold][y] for threshold in range(0, n, skip)]
-    return getattr(Plot, method)(X, Y, color = color, alpha = opacity), X, Y
+    return getattr(plot, method)(X, Y, color = color, alpha = opacity), X, Y
     
 def plotCurve (conditions, labels, xKey = "", yKey = "", xLabel = "", yLabel = "", title = "Title", colors = ["green", "orange", "red", "purple", "blue"], diag = "tl", method = "plot", legendLoc = "lower left"):
     # Setup
-    fig         = matplotlib.pylot.figure(1, (8, 8), dpi = 300)
+    fig         = plot.figure(1, (8, 8), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_xlabel(xLabel, fontsize = 10)
     axis.set_ylabel(yLabel, fontsize = 10)
@@ -475,18 +503,18 @@ def plotCurve (conditions, labels, xKey = "", yKey = "", xLabel = "", yLabel = "
         
     # Plot Diagonal
     if diag is "tl":
-        matplotlib.pylot.plot((1, 0), color='navy', lw=1, linestyle='--')
+        plot.plot((1, 0), color='navy', lw=1, linestyle='--')
     if diag is "tr":
-        matplotlib.pylot.plot((0, 1), color='navy', lw=1, linestyle='--')
-    matplotlib.pylot.ylim([0, 1])
-    matplotlib.pylot.xlim([0, 1])
-    matplotlib.pylot.title(title, fontsize = 12)
+        plot.plot((0, 1), color='navy', lw=1, linestyle='--')
+    plot.ylim([0, 1])
+    plot.xlim([0, 1])
+    plot.title(title, fontsize = 12)
     # Plot Legend
     if method is "scatter":
-        matplotlib.pylot.legend(legendKeys, nLabels, loc = legendLoc, fontsize = 10)
+        plot.legend(legendKeys, nLabels, loc = legendLoc, fontsize = 10)
     else:
         handles = [matplotlib.patches.Patch(color = key[0]._color, label = label) for key, label in zip(legendKeys, nLabels)]
-        matplotlib.pylot.legend(handles=handles, loc = legendLoc, fontsize = 10)
+        plot.legend(handles=handles, loc = legendLoc, fontsize = 10)
     # Save & Render
     
     return fig
@@ -495,7 +523,7 @@ def plotCurve (conditions, labels, xKey = "", yKey = "", xLabel = "", yLabel = "
 def plotMaximized (analysis, x, y, color = "red", n = 100, skip = 1):
     combinations = [analysis[threshold][x] + analysis[threshold][y] for threshold in range(0, n, skip)]
     index, combination = max(enumerate(combinations), key = itemgetter(1))
-    return matplotlib.pylot.scatter(analysis[index][x], analysis[index][y], s=200, facecolors = 'none', edgecolors = color)
+    return plot.scatter(analysis[index][x], analysis[index][y], s=200, facecolors = 'none', edgecolors = color)
 
 # Get Analysis of Threshold with Maximum Combined Metrics (e.g. sensitivity and specificity or tpr and fpr)
 def getMaximizedAnalysis (analysis, x, y, skip = 1):
@@ -542,7 +570,7 @@ def multiCurve (c1Tups, c2Tups, truthSet, c1Map, c2Map, subsetKey = "", c1Label 
         c2Analysis = generateAnalyses(c2Hm, truthSet, "TLOD")
         analyses.append([c1Analysis, c2Analysis])
     # Plot Setup
-    fig         = matplotlib.pylot.figure(1, (8, 8), dpi = 300)
+    fig         = plot.figure(1, (8, 8), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_xlabel(xLabel, fontsize = 10)
     axis.set_ylabel(yLabel, fontsize = 10)
@@ -561,35 +589,35 @@ def multiCurve (c1Tups, c2Tups, truthSet, c1Map, c2Map, subsetKey = "", c1Label 
             j += 1
         i += 1
     if diag is "tl":
-        matplotlib.pylot.plot((1, 0), color='navy', lw=1, linestyle='--')
+        plot.plot((1, 0), color='navy', lw=1, linestyle='--')
     if diag is "tr":
-        matplotlib.pylot.plot((0, 1), color='navy', lw=1, linestyle='--')
-    matplotlib.pylot.ylim([0, 1])
-    matplotlib.pylot.xlim([0, 1])
-    matplotlib.pylot.title(title, fontsize = 12)
+        plot.plot((0, 1), color='navy', lw=1, linestyle='--')
+    plot.ylim([0, 1])
+    plot.xlim([0, 1])
+    plot.title(title, fontsize = 12)
     if method is "scatter":
-        matplotlib.pylot.legend(legendKeys, labels, loc = legendLoc, fontsize = 10)
+        plot.legend(legendKeys, labels, loc = legendLoc, fontsize = 10)
     else:
         labels = [c1Label, c2Label]
         handles = [matplotlib.patches.Patch(color = key[0]._color, label = label) for key, label in zip(legendKeys, labels)]
-        matplotlib.pylot.legend(handles=handles, loc = legendLoc, fontsize = 10)
+        plot.legend(handles=handles, loc = legendLoc, fontsize = 10)
     
     return fig
 
 def plotQualityScores (ref, alt, title = "Title"):
     # Setup
-    fig         = matplotlib.pylot.figure(1, (16, 12), dpi = 300)
+    fig         = plot.figure(1, (16, 12), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_ylabel('Quality Score', fontsize = 10)
     axis.set_xlabel('Variant Allele', fontsize = 10)
     # Scatter
-    r = matplotlib.pylot.scatter(range(len(ref)), ref, color = "orange", alpha = 0.2)
-    a = matplotlib.pylot.scatter(range(len(alt)), alt, color = "blue", alpha = 0.2)
+    r = plot.scatter(range(len(ref)), ref, color = "orange", alpha = 0.2)
+    a = plot.scatter(range(len(alt)), alt, color = "blue", alpha = 0.2)
     # Plot
-    matplotlib.pylot.ylim([0, 40])
-    matplotlib.pylot.xlim([0, len(ref)])
-    matplotlib.pylot.title(title, fontsize = 12)
-    matplotlib.pylot.legend((r, a), ('Reference', 'Alternate'), loc = 'lower right', fontsize = 10)
+    plot.ylim([0, 40])
+    plot.xlim([0, len(ref)])
+    plot.title(title, fontsize = 12)
+    plot.legend((r, a), ('Reference', 'Alternate'), loc = 'lower right', fontsize = 10)
     
     return fig
     
@@ -599,12 +627,12 @@ def plotFilterFrequencies (hashmap, title = "", xlabel = "", ylabel = ""):
     counts = defaultdict(int)
     for md5hash, record in hashmap.items():
         if len(record.FILTER) > 0:
-            for mutectFilter in record.FILTER:
-                counts[mutectFilter] += 1
+            for aFilter in record.FILTER:
+                counts[aFilter] += 1
     # Get Frequencies
     frequencies = {key : (value / len(hashmap)) for key, value in counts.items()}
     # Plot Bar Plot
-    return simpleInlinePlot(list(frequencies.keys()), list(frequencies.values()), title = title, xlabel = xlabel, ylabel = ylabel, plotType = "bar")
+    return simpleInlinePlot(list(frequencies.keys()), list(frequencies.values()), domainX = [0, len(frequencies.keys())], title = title, xlabel = xlabel, ylabel = ylabel, plotType = "bar")
     
 def plotMetrics(analysis, metrics = ["sensitivity", "specificity"], reduce = lambda x: len(x), title = "Title", colors = ["red", "green", "yellow", "orange"]):
     metricsDict = { metric : [] for metric in metrics }
@@ -617,7 +645,7 @@ def plotMetrics(analysis, metrics = ["sensitivity", "specificity"], reduce = lam
             else:
                 metricsDict[metric].append(records[metric])
     index = 0
-    figure = matplotlib.pylot.figure(1, (8, 8), dpi = 300) 
+    figure = plot.figure(1, (8, 8), dpi = 300) 
     axis = figure.add_subplot(1,1,1)
     axis.set_title(title, fontsize = 12)
     axis.set_xlabel("Threshold", fontsize = 10)
@@ -629,11 +657,46 @@ def plotMetrics(analysis, metrics = ["sensitivity", "specificity"], reduce = lam
         label = metric
         x = thresholds
         y = values
-        matplotlib.pylot.subplot(1,1,1)
-        matplotlib.pylot.plot(x, y, label = label, color = color, alpha = 0.6, lw = 2)
-        matplotlib.pylot.legend(fontsize = 10, loc = "upper center", ncol = 5, bbox_to_anchor=(0.5, -0.05))
+        plot.subplot(1,1,1)
+        plot.plot(x, y, label = label, color = color, alpha = 0.6, lw = 2)
+        plot.legend(fontsize = 10, loc = "upper center", ncol = 5, bbox_to_anchor=(0.5, -0.05))
         index += 1
     return fig
+
+#
+# Bootstrap AUC Intervals
+#
+
+def getVector (analyses, key):
+    vector = []
+    for threshold, analysis in analyses.items():
+        vector.append(analysis[key])
+    return vector
+
+#
+# UI
+#
+
+# Print iterations progress
+def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█'):
+    """
+    Call in a loop to create terminal progress bar
+    @params:
+        iteration   - Required  : current iteration (Int)
+        total       - Required  : total iterations (Int)
+        prefix      - Optional  : prefix string (Str)
+        suffix      - Optional  : suffix string (Str)
+        decimals    - Optional  : positive number of decimals in percent complete (Int)
+        length      - Optional  : character length of bar (Int)
+        fill        - Optional  : bar fill character (Str)
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filledLength = int(length * iteration // total)
+    bar = fill * filledLength + '-' * (length - filledLength)
+    print('\r\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
+    # Print New Line on Complete
+    if iteration == total: 
+        print()
 
 #
 # Main Routine
@@ -649,16 +712,23 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--set", type = str, help = "Data Set (e.g. 'set1')")
     parser.add_argument("-c", "--condition", type = str, help = "Error Model Condition")
     parser.add_argument("-o", "--output", type = str, help = "Output Prefix")
+    parser.add_argument("-n", "--ncores", type = str, help = "Number of Cores to Use")
     argsDict = vars(parser.parse_args())
     dataset = argsDict["set"]
     condition = argsDict["condition"]
     outputdir = argsDict["output"]
+    ncores = argsDict["ncores"]
 
+    # Verify Required Arguments Exist
     assert dataset is not None, "Set Argument Required (-s | --set)"
     assert condition is not None, "Condition Argument Required (-c | --condition)"
 
+    # Argument Resolution
     if outputdir is None:
         outputdir = "output/%s/%s" % (dataset, condition)
+    if ncores is None:
+        nCPU = multiprocessing.cpu_count()
+        ncores = nCPU - 2 if nCPU > 2 else 1
 
     # Selecte Appropriate Truth Set
     truthsets = [
@@ -672,7 +742,7 @@ if __name__ == "__main__":
     print("%s – %s – %s" % (dataset, condition, selected))
 
     # VCF Locations
-    condition1VCF  = "vcf/synthetic.challenge.%s.%s.default.%s.raw.snps.indels.vcf" % (dataset, condition, subcondition)
+    condition1VCF  = "vcf/synthetic.challenge.%s.%s.default.nobqsr.raw.snps.indels.vcf" % (dataset, condition)
     condition2VCF  = "vcf/synthetic.challenge.%s.%s.default.bqsr.raw.snps.indels.vcf" % (dataset, condition)
     truthVCF       = "vcf/truth-set/%s" % selected
 
@@ -682,7 +752,7 @@ if __name__ == "__main__":
     trReader       = VCF.Reader(open(truthVCF, 'r'))
 
     # Variant Record Properties to Define Uniqueness
-    uniqueProps    = ["CHROM", "POS", "REF", "ALT"]
+    uniqueProps    = ["CHROM", "POS", "REF", "ALT"] # Variant Record Properties to Define Uniqueness - Qual Avoided (BQSR)
 
     #
     # Store Metadata References
@@ -713,73 +783,249 @@ if __name__ == "__main__":
 #
 
     # Hash VCF Records for Comparison - Use Values of Unique Props to Generate Hash
-    print("Hashing Condition 1...")
+    print("Hashing Condition 1...\n")
     c1HashMap = hashVariants(c1Reader, uniqueProps, algorithm = "sha1")
-    print("Hashing Condition 2...")
+    print("Hashing Condition 2...\n")
     c2HashMap = hashVariants(c2Reader, uniqueProps, algorithm = "sha1")
-    print("Hashing Truth Set...")
+    print("Hashing Truth Set...\n")
     trHashMap = hashVariants(trReader, uniqueProps, algorithm = "sha1")
-    print("Done")
+    print("Done\n")
 
     # Retrieve Passing Variants
     c1Passing = passingVariants(c1HashMap)
     c2Passing = passingVariants(c2HashMap)
 
     # Get Sets      
-    trSet   = set(trHashMap.keys())
-    c1Set   = set(c1HashMap.keys())
-    c2Set   = set(c2HashMap.keys())
+    trKeys   = set(trHashMap.keys())
+    c1Keys   = set(c1HashMap.keys())
+    c2Keys   = set(c2HashMap.keys())
 
     # Lengths
-    tr      = len(trSet)
-    c1      = len(c1Set)
-    c2      = len(c2Set)
+    tr      = len(trKeys)
+    c1      = len(c1Keys)
+    c2      = len(c2Keys)
+
+    # Variant Ranges
+    allranges = [((i / 2) / 10, ((i + 1) / 2) / 10) for i in range(20)]
+    lfvranges = [(i / 100, (i + 1) / 100) for i in range(15)]
 
     #
-    # BQSR / No BQSR Interval Performance Comparison - All Variants
+    # Plot Truth
     #
+
+    # Non SNVs Generate Exceptions and Are Omitted From Analysis
+    allCounts = OrderedDict([("except", 0)])
+    lfvCounts = OrderedDict([("except", 0)])
+    for lower, upper in allranges:
+        rangeStr = "%.2f-%.2f" % (lower, upper)
+        allCounts[rangeStr] = 0
+        for key, record in trHashMap.items():
+            try:
+                vaf = record.INFO["VAF"] 
+                if vaf > lower and vaf <= upper:
+                    allCounts[rangeStr] += 1
+            except:
+                allCounts["except"] += 1
+    for lower, upper in lfvranges:
+        rangeStr = "%.2f-%.2f" % (lower, upper)
+        lfvCounts[rangeStr] = 0
+        for key, record in trHashMap.items():
+            try:
+                vaf = record.INFO["VAF"] 
+                if vaf > lower and vaf <= upper:
+                    lfvCounts[rangeStr] += 1
+            except:
+                lfvCounts["except"] += 1
+
+    allX, allY = [], []
+    for key, value in allCounts.items(): 
+        if key != "except":
+            allX.append(key)
+            allY.append(value)
+
+    lfvX, lfvY = [], []
+    for key, value in lfvCounts.items(): 
+        if key != "except":
+            lfvX.append(key)
+            lfvY.append(value)
+
+    allTruthFig = simpleInlinePlot(allX, allY, plotType = "bar", xlabel = "Variant Allele Frequency Range (0.05 brackets)", ylabel = "Count", domainX = (0, 20), rangeY = (0, 3000), title = "Variant Counts by Variant Allele Frequency (VAF) Range [0.00 - 1.00]")
+    allTruthFig.savefig("output/all-variants-truth.pdf", bbox_inches='tight')
+    allTruthFig.clf()
+
+    lfvTruthFig = simpleInlinePlot(lfvX, lfvY, plotType = "bar", xlabel = "Variant Allele Frequency Range (0.01 brackets)", ylabel = "Count", domainX = (0, 15), rangeY = (0, 50), title = "Variant Counts by Variant Allele Frequency (VAF) Range [0.00 - 0.15]")
+    lfvTruthFig.savefig("output/lfv-variants-truth.pdf", bbox_inches='tight')
+    lfvTruthFig.clf()
+
+#
+# Bootstrap Confidence Intervals for Sens-Spec AUCs
+#
+
+    # n Bootstrap Args
+    thresholds = 100        # default value, analogous to sample (for AUC)
+    nResample = 15000       # number of bootstrapped samples
+    kCoef = 0.2             # proportion of sample to resample
+    alpha = 0.05            # alpha (significance level)
+    zscore = 1.96           # normal distribution zscore value for two sided 95% CI (alpha = 0.05)
+    c1AUCs, c2AUCs = [], []
+
+    # Some Deletions Below; GC Should Deallocate the Memory but Seems Calling it Explicitly Helps
+
+    # Condition 1 AUC Compuation - Whole Sample
+    c1Analyses = generateAnalyses(c1HashMap, trKeys, "TLOD", thresholds = thresholds)
+    c1Sens, c1Spec = getVector(c1Analyses, "sensitivity"), getVector(c1Analyses, "specificity")
+    del c1Analyses
+    c1AUC = metrics.auc(c1Sens, c1Spec, reorder = True)
+    del c1Sens
+    del c1Spec
+
+    # Condition 2 AUC Computation - Whole Sample
+    c2Analyses = generateAnalyses(c2HashMap, trKeys, "TLOD", thresholds = thresholds)
+    c2Sens, c2Spec = getVector(c2Analyses, "sensitivity"), getVector(c2Analyses, "specificity")
+    del c2Analyses
+    c2AUC = metrics.auc(c2Sens, c2Spec, reorder = True)
+    del c2Sens
+    del c2Spec
+
+    # Compute k Subsample Size (c1 = no bqsr; c2 = bqsr)
+    c1K = int(len(c1Keys) * kCoef)
+    c2K = int(len(c2Keys) * kCoef)
+
+    # Hacky Functions for Dirty Multiprocessing & Computational Efficiency 
+    # Note: Parameters Are Pulled From Global Scope and Not Passed as Arguments *Shudder*
+    def c1BootstrapAUC (i):
+        c1RandomSubset = {}
+        for j in range(c1K):
+            c1RandomKey = random.choice(c1Keys)
+            c1RandomSubset[c1RandomKey] = c1HashMap[c1RandomKey]
+        c1AnalysesBS = generateAnalyses(c1RandomSubset, trKeys, "TLOD", thresholds = thresholds)
+        # Get Sensitivity & Specificity Vectors
+        c1SensBS, c1SpecBS = getVector(c1AnalysesBS, "sensitivity"), getVector(c1AnalysesBS, "specificity")
+        c1AUCBS = metrics.auc(c1SensBS, c1SpecBS, reorder = True)
+        return c1AUCBS
+
+    def c2BootstrapAUC (i):
+        c2RandomSubset = {}
+        for j in range(c1K):
+            c2RandomKey = random.choice(c2Keys)
+            c2RandomSubset[c2RandomKey] = c2HashMap[c2RandomKey]
+        c2AnalysesBS = generateAnalyses(c2RandomSubset, trKeys, "TLOD", thresholds = thresholds)
+        # Get Sensitivity & Specificity Vectors
+        c2SensBS, c2SpecBS = getVector(c2AnalysesBS, "sensitivity"), getVector(c2AnalysesBS, "specificity")
+        c2AUCBS = metrics.auc(c2SensBS, c2SpecBS, reorder = True)
+        return c2AUCBS
+
+    print("Bootstrapping of 95%% CI's (%dx Multithreaded). This Will Take Probably a While." % ncores)
+    with multiprocessing.Pool(ncores) as pool:
+
+        print("Computing 95%% CI's for Condition 1, n = %d, kCoef = %0.2f, k = %d, resamples = %d" % (len(c1Keys), kCoef, c1K, nResample))
+        c1AUCs = []
+        for i, result in enumerate(pool.imap_unordered(c1BootstrapAUC, list(range(nResample))), 1):
+            c1AUCs.append(result)
+            if (i % 10) == 0: 
+                printProgressBar(i, nResample, prefix = 'Resampling', suffix = '(%d / %d)' % (i, nResample))
+        del c1Keys
+        # Means, Standard Deviation, & Standard Error
+        c1AUCµ = mean(c1AUCs)
+        c1AUCstdev = stdev(c1AUCs)
+        c1AUCse = c1AUCstdev / math.sqrt(nResample)
+        # Confidence Intervals
+        c1UpperCi, c1LowerCi = c1AUC + (zscore * c1AUCse), c1AUC - (zscore * c1AUCse)
+        del c1AUCs
+
+        print("Computing 95%% CI's for Condition 2, n = %d, kCoef = %0.2f, k = %d, resamples = %d" % (len(c2Keys), kCoef, c2K, nResample))
+        c2AUCs = []
+        for i, result in enumerate(pool.imap_unordered(c2BootstrapAUC, list(range(nResample))), 1):
+            c2AUCs.append(result)
+            if (i % 10) == 0: 
+                printProgressBar(i, nResample, prefix = 'Resampling', suffix = '(%d / %d)' % (i, nResample))
+        del c2Keys
+        # Means, Standard Deviation, & Standard Error
+        c2AUCµ = mean(c2AUCs)
+        c2AUCstdev = stdev(c2AUCs)
+        c2AUCse = c2AUCstdev / math.sqrt(nResample)
+        # Confidence Intervals
+        c2UpperCi, c2LowerCi = c2AUC + (zscore * c2AUCse), c2AUC - (zscore * c2AUCse)
+        del c2AUCs
+
+    # Is Result Significant?
+    significant = True if ((c1LowerCi > c2UpperCi) or (c2LowerCi > c1UpperCi)) else False
+
+    # Print / Write Analyses
+    with open(outputdir + "/auc-ci", "w") as output:
+        output.write("No BQSR AUC = %0.4f – (95%% CI): [%0.4f, %0.4f]\n" % (c1AUC, c1UpperCi, c1LowerCi))
+        output.write("BQSR AUC = %0.4f – (95%% CI): [%0.4f, %0.4f]\n" % (c2AUC, c2UpperCi, c2LowerCi))
+        if significant:
+            output.write("\nSignificant Difference at alpha = 0.05.\n")
+        else:
+            output.write("\nNo Significant Difference at alpha = 0.05.\n")
+    print("No BQSR AUC = %0.4f – (95%% CI): [%0.4f, %0.4f]\n" % (c1AUC, c1UpperCi, c1LowerCi))
+    print("BQSR AUC = %0.4f – (95%% CI): [%0.4f, %0.4f]\n" % (c2AUC, c2UpperCi, c2LowerCi))
+
+#
+# Get Difference in VAFs Between Truth & TP Predictions & Write to TSV
+#
+
+    c1MatchedVAFs, c1Excluded = matchConditionVAFs(c1HashMap, trHashMap)
+    with open(outputdir + "/nobqsr-tp-vaf-diff.tsv", "w") as output:
+        output.write("t_vaf\tc_vaf\tvaf_diff\thash\n")
+        for match in c1MatchedVAFs:
+            output.write("%0.4f\t%0.4f\t%0.4f\t%s\n" % (match["truth"], match["condition"], (match["condition"] - match["truth"]), match["key"]))
+    print("No BQSR Condition - Excluded %d Variants From Analysis (no VAF in Truth Set)" % len(c1Excluded))
+
+    c2MatchedVAFs, c2Excluded = matchConditionVAFs(c2HashMap, trHashMap)
+    with open(outputdir + "/bqsr-tp-vaf-diff.tsv", "w") as output:
+        output.write("t_vaf\tc_vaf\tvaf_diff\thash\n")
+        for match in c2MatchedVAFs:
+            output.write("%0.4f\t%0.4f\t%0.4f\t%s\n" % (match["truth"], match["condition"], (match["condition"] - match["truth"]), match["key"]))
+    print("BQSR Condition - Excluded %d Variants From Analysis (no VAF in Truth Set)" % len(c2Excluded))
+
+    trueVafs = [match["truth"] for match in c1MatchedVAFs]
+    c1DiffVafs = [(match["condition"] - match["truth"]) for match in c1MatchedVAFs]
+    c2DiffVafs = [(match["condition"] - match["truth"]) for match in c2MatchedVAFs]
+    c1CondVafs = [match["condition"] for match in c1MatchedVAFs]
+    c2CondVafs = [match["condition"] for match in c2MatchedVAFs]
+
+    # Write Statistics Output
+    stats(trueVafs, title = "Statistics Summary – Truth VAFs", output = outputdir + "/truth-vaf-summary-stats")
+    stats(c1DiffVafs, title = "Statistics Summary – No BQSR VAF Diff From Truth", output = outputdir + "/nobqsr-truth-vaf-diff-summary-stats")
+    stats(c1CondVafs, title = "Statistics Summary – No BQSR VAF ", output = outputdir + "/nobqsr-vaf-summary-stats")
+    stats(c2DiffVafs, title = "Statistics Summary – BQSR VAF Diff From Truth", output = outputdir + "/bqsr-truth-vaf-diff-summary-stats")
+    stats(c2CondVafs, title = "Statistics Summary – BQSR VAF", output = outputdir + "/bqsr-vaf-summary-stats")
+   
+#
+# BQSR / No BQSR Performance Comparison by VAF Interval - All Variants
+#
 
     # Plot Across 5% Ranges
-    for i in range(20):
-        lower = (i / 2) / 10
-        upper = ((i + 1) / 2) / 10
-        lowerStr = str(lower)
-        upperStr = str(upper)
-        figure = plotCurves([(lower, upper)], [(lower, upper)], trSet, c1HashMap, c2HashMap, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity-Specificity by All Variant Allele Frequency Interval")[0]
+    for lower, upper in allranges:
+        lowerStr, upperStr = str(lower), str(upper)
+        figure = plotCurves([(lower, upper)], [(lower, upper)], trKeys, c1HashMap, c2HashMap, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity-Specificity by All Variant Allele Frequency Interval")[0]
         figure.savefig(outputdir + "/senspec-" + lowerStr + "-" + upperStr + "-all-variants.pdf", bbox_inches='tight')
         figure.clf()
 
     # Plot Across 0.1% LFV Ranges
-    for i in range(15):
-        lower = i / 100
-        upper = (i + 1) / 100
-        lowerStr = str(lower)
-        upperStr = str(upper)
-        figure = plotCurves([(lower, upper)], [(lower, upper)], trSet, c1HashMap, c2HashMap, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity-Specificity by All Variant Allele Frequency Interval")[0]
+    for lower, upper in lfvranges:
+        lowerStr, upperStr = str(lower), str(upper)
+        figure = plotCurves([(lower, upper)], [(lower, upper)], trKeys, c1HashMap, c2HashMap, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity-Specificity by All Variant Allele Frequency Interval")[0]
         figure.savefig(outputdir + "/senspec-" + lowerStr + "-" + upperStr + "-all-variants.pdf", bbox_inches='tight')
         figure.clf()
     
-    #
-    # BQSR / No BQSR Interval Performance Comparison - Passing Variants
-    #
+#
+# BQSR / No BQSR Performance Comparison by VAF Interval  - Passing Variants
+#
 
     # Plot Across 5% Ranges
-    for i in range(20):
-        lower = (i / 2) / 10
-        upper = ((i + 1) / 2) / 10
-        lowerStr = str(lower)
-        upperStr = str(upper)
-        figure = plotCurves([(lower, upper)], [(lower, upper)], trSet, c1Passing, c2Passing, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity-Specificity by Passing Variant Allele Frequency Interval")[0]
+    for lower, upper in allranges:
+        lowerStr, upperStr = str(lower), str(upper)
+        figure = plotCurves([(lower, upper)], [(lower, upper)], trKeys, c1Passing, c2Passing, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity-Specificity by Passing Variant Allele Frequency Interval")[0]
         figure.savefig(outputdir + "/senspec-" + lowerStr + "-" + upperStr + "-passing-variants.pdf", bbox_inches='tight')
         figure.clf()
     
     # Plot Across 0.1% LFV Ranges
-    for i in range(15):
-        lower = i / 100
-        upper = (i + 1) / 100
-        lowerStr = str(lower)
-        upperStr = str(upper)
-        figure = plotCurves([(lower, upper)], [(lower, upper)], trSet, c1Passing, c2Passing, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity-Specificity by Passing Variant Allele Frequency Interval")[0]
+    for lower, upper in lfvranges:
+        lowerStr, upperStr = str(lower), str(upper)
+        figure = plotCurves([(lower, upper)], [(lower, upper)], trKeys, c1Passing, c2Passing, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity-Specificity by Passing Variant Allele Frequency Interval")[0]
         figure.savefig(outputdir + "/senspec-" + lowerStr + "-" + upperStr + "-passing-variants.pdf", bbox_inches='tight')
         figure.clf()
 
@@ -915,9 +1161,9 @@ if __name__ == "__main__":
     # Mutect2 Performance at Low VAF
     # Called / Not Called by MuTect2 by VAF Range [> 0.00 - 0.05]; [0.05 - 0.10]; [0.10 - 0.15]
 
-    #
-    # Map Analysis
-    #
+#
+# Map Analysis
+#
 
     trCombinations = [trSubGt10, trSubGt05, trSubGt00]
     combinations = [
@@ -948,12 +1194,12 @@ if __name__ == "__main__":
 #
 
     # Individual Plots
-    figure = plotCurves([(0.0, 1.0)], [(0.0, 1.0)], trSet, c1HashMap, c2HashMap, subsetKey = "AF", xKey = "fpr", yKey = "tpr", diag = "tr", legendLoc = "lower right", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "ROC Curve by Tumor LOD Thresholds for All Variants (No BQSR v. BQSR)")[0]
+    figure = plotCurves([(0.0, 1.0)], [(0.0, 1.0)], trKeys, c1HashMap, c2HashMap, subsetKey = "AF", xKey = "fpr", yKey = "tpr", diag = "tr", legendLoc = "lower right", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "ROC Curve by Tumor LOD Thresholds for All Variants (No BQSR v. BQSR)")[0]
     figure.savefig(outputdir + "/roc-all-variants.pdf", bbox_inches='tight')   
     figure.clf()
 
     # Individual Plots
-    figure = plotCurves([(0.0, 1.0)], [(0.0, 1.0)], trSet, c1Passing, c2Passing, subsetKey = "AF", xKey = "fpr", yKey = "tpr", diag = "tr", legendLoc = "lower right", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "ROC Curve by Tumor LOD Thresholds for Passing Variants (TLOD >= 10.0) (No BQSR v. BQSR)")[0]
+    figure = plotCurves([(0.0, 1.0)], [(0.0, 1.0)], trKeys, c1Passing, c2Passing, subsetKey = "AF", xKey = "fpr", yKey = "tpr", diag = "tr", legendLoc = "lower right", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "ROC Curve by Tumor LOD Thresholds for Passing Variants (TLOD >= 10.0) (No BQSR v. BQSR)")[0]
     figure.savefig(outputdir + "/roc-passing-variants.pdf", bbox_inches='tight')
     figure.clf()
 
@@ -964,12 +1210,12 @@ if __name__ == "__main__":
     #
 
     # Individual Plots
-    figure = plotCurves([(0.0, 1.0)], [(0.0, 1.0)], trSet, c1HashMap, c2HashMap, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity Specificity Curve – Tumor LOD Thresholds – All Variants (No BQSR v. BQSR)")[0]
+    figure = plotCurves([(0.0, 1.0)], [(0.0, 1.0)], trKeys, c1HashMap, c2HashMap, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity Specificity Curve – Tumor LOD Thresholds – All Variants (No BQSR v. BQSR)")[0]
     figure.savefig(outputdir + "/senspec-all-variants.pdf", bbox_inches='tight')
     figure.clf()
 
     # Individual Plots
-    figure = plotCurves([(0.0, 1.0)], [(0.0, 1.0)], trSet, c1Passing, c2Passing, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity Specificity Curve – Tumor LOD Thresholds – Passing Variants (No BQSR v. BQSR)")[0]
+    figure = plotCurves([(0.0, 1.0)], [(0.0, 1.0)], trKeys, c1Passing, c2Passing, subsetKey = "AF", c1Label = "No BQSR", c2Label = "BQSR", titleStr = "Sensitivity Specificity Curve – Tumor LOD Thresholds – Passing Variants (No BQSR v. BQSR)")[0]
     figure.savefig(outputdir + "/senspec-passing-variants.pdf", bbox_inches='tight')
     figure.clf()
 
@@ -980,35 +1226,32 @@ if __name__ == "__main__":
     # Second Look: What Threshold Results in The Max Combined Sensitivity-Specificity?
 
     # Generate Analyses - With Tumor LOD As Metric to Compute Statistics On
-    condition1Analysis = generateAnalyses(c1Passing, trSet, "TLOD")
+    condition1Analyses = generateAnalyses(c1Passing, trKeys, "TLOD")
     del c1Passing
-    condition2Analysis = generateAnalyses(c2Passing, trSet, "TLOD")
+    condition2Analyses = generateAnalyses(c2Passing, trKeys, "TLOD")
     del c2Passing
 
-    #
-    # Generate Sensitivity-Specificity Curve - With Maximum Combination
-    #
 
     # Setup
-    fig         = matplotlib.pylot.figure(1, (8, 8), dpi = 300)
+    fig         = plot.figure(1, (8, 8), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_ylabel('Sensitivity', fontsize = 10)
     axis.set_xlabel('Specificity', fontsize = 10)
     # Scatter
-    c1, c1X, c1Y = scatterXY(condition1Analysis, "specificity", "sensitivity", "green")
-    c2, c2X, c2Y = scatterXY(condition2Analysis, "specificity", "sensitivity", "orange")
+    c1, c1X, c1Y = scatterXY(condition1Analyses, "specificity", "sensitivity", "green")
+    c2, c2X, c2Y = scatterXY(condition2Analyses, "specificity", "sensitivity", "orange")
     c1Auc = metrics.auc(c1X, c1Y)
     c2Auc = metrics.auc(c2X, c2Y)
     c1Label = "No BQSR (AUC = %.4f)" % c1Auc
     c2Label = "BQSR (AUC = %.4f)" % c2Auc
     # Annotate Maximized Threshold
-    m  = plotMaximized(condition1Analysis, "specificity", "sensitivity")
+    m  = plotMaximized(condition1Analyses, "specificity", "sensitivity")
     # Plot
-    matplotlib.pylot.plot((1, 0), color='navy', lw=1, linestyle='--')
-    matplotlib.pylot.ylim([0, 1])
-    matplotlib.pylot.xlim([0, 1])
-    matplotlib.pylot.title("Sensitivity Specificity Curve – Tumor LOD Thresholds – Passing Variants (No BQSR v. BQSR)", fontsize = 12)
-    matplotlib.pylot.legend((c1, c2), (c1Label, c2Label), loc = 'lower left', fontsize = 10)
+    plot.plot((1, 0), color='navy', lw=1, linestyle='--')
+    plot.ylim([0, 1])
+    plot.xlim([0, 1])
+    plot.title("Sensitivity Specificity Curve – Tumor LOD Thresholds – Passing Variants (No BQSR v. BQSR)", fontsize = 12)
+    plot.legend((c1, c2), (c1Label, c2Label), loc = 'lower left', fontsize = 10)
     fig.savefig(outputdir + "/senspec-passing-optimal-thresh.pdf", bbox_inches='tight')
     fig.clf()    
         
@@ -1017,10 +1260,10 @@ if __name__ == "__main__":
     #
 
     # No BQSR Condition Statistics
-    printBest(condition1Analysis, output=outputdir + "/c1-passing-analysis-accuracy") # Accuracy
-    printBest(condition1Analysis, "f1score", output=outputdir + "/c1-passing-analysis-f1score")
-    printBest(condition1Analysis, "ppv", output=outputdir + "/c1-passing-analysis-ppv")
-    c1MaxThresh, c1MaxAnalysis = getMaximizedAnalysis(condition1Analysis, "sensitivity", "specificity")
+    printBest(condition1Analyses, output=outputdir + "/c1-passing-analysis-accuracy") # Accuracy
+    printBest(condition1Analyses, "f1score", output=outputdir + "/c1-passing-analysis-f1score")
+    printBest(condition1Analyses, "ppv", output=outputdir + "/c1-passing-analysis-ppv")
+    c1MaxThresh, c1MaxAnalysis = getMaximizedAnalysis(condition1Analyses, "sensitivity", "specificity")
     # Print / Write Analyses
     with open(outputdir + "/max-sens-spec-passing-nobqsr", "w") as output:
         output.write("==================================================\n")
@@ -1031,10 +1274,10 @@ if __name__ == "__main__":
         output.write("==================================================\n")
 
     # BQSR Condition Statistics
-    printBest(condition2Analysis, output=outputdir + "/c2-passing-analysis-accuracy") # Accuracy
-    printBest(condition2Analysis, "f1score", output=outputdir + "/c2-passing-analysis-f1score")
-    printBest(condition2Analysis, "ppv", output=outputdir + "/c2-passing-analysis-ppv")
-    c2MaxThresh, c2MaxAnalysis = getMaximizedAnalysis(condition2Analysis, "sensitivity", "specificity")
+    printBest(condition2Analyses, output=outputdir + "/c2-passing-analysis-accuracy") # Accuracy
+    printBest(condition2Analyses, "f1score", output=outputdir + "/c2-passing-analysis-f1score")
+    printBest(condition2Analyses, "ppv", output=outputdir + "/c2-passing-analysis-ppv")
+    c2MaxThresh, c2MaxAnalysis = getMaximizedAnalysis(condition2Analyses, "sensitivity", "specificity")
     # Print / Write Analyses
     with open(outputdir + "/max-sens-spec-passing-bqsr", "w") as output:
         output.write("==================================================\n")
@@ -1044,8 +1287,8 @@ if __name__ == "__main__":
             output.write(line)
         output.write("==================================================\n")
 
-    del condition1Analysis
-    del condition2Analysis
+    del condition1Analyses
+    del condition2Analyses
 
 #
 # Additional All Analysis
@@ -1054,9 +1297,9 @@ if __name__ == "__main__":
     # Second Look: What Threshold Results in The Max Combined Sensitivity-Specificity?
 
     # Generate Analyses - With Tumor LOD As Metric to Compute Statistics On
-    condition1Analysis = generateAnalyses(c1HashMap, trSet, "TLOD")
+    condition1Analyses = generateAnalyses(c1HashMap, trKeys, "TLOD")
     del c1HashMap
-    condition2Analysis = generateAnalyses(c2HashMap, trSet, "TLOD")
+    condition2Analyses = generateAnalyses(c2HashMap, trKeys, "TLOD")
     del c2HashMap
 
     #
@@ -1064,25 +1307,25 @@ if __name__ == "__main__":
     #
 
     # Setup
-    fig         = matplotlib.pylot.figure(1, (8, 8), dpi = 300)
+    fig         = plot.figure(1, (8, 8), dpi = 300)
     axis        = fig.add_subplot(111)
     axis.set_ylabel('Sensitivity', fontsize = 10)
     axis.set_xlabel('Specificity', fontsize = 10)
     # Scatter
-    c1, c1X, c1Y = scatterXY(condition1Analysis, "specificity", "sensitivity", "green")
-    c2, c2X, c2Y = scatterXY(condition2Analysis, "specificity", "sensitivity", "orange")
+    c1, c1X, c1Y = scatterXY(condition1Analyses, "specificity", "sensitivity", "green")
+    c2, c2X, c2Y = scatterXY(condition2Analyses, "specificity", "sensitivity", "orange")
     c1Auc = metrics.auc(c1X, c1Y)
     c2Auc = metrics.auc(c2X, c2Y)
     c1Label = "No BQSR (AUC = %.4f)" % c1Auc
     c2Label = "BQSR (AUC = %.4f)" % c2Auc
     # Annotate Maximized Threshold
-    m  = plotMaximized(condition1Analysis, "specificity", "sensitivity")
+    m  = plotMaximized(condition1Analyses, "specificity", "sensitivity")
     # Plot
-    matplotlib.pylot.plot((1, 0), color='navy', lw=1, linestyle='--')
-    matplotlib.pylot.ylim([0, 1])
-    matplotlib.pylot.xlim([0, 1])
-    matplotlib.pylot.title("Sensitivity Specificity Curve – Tumor LOD Thresholds – All Variants (No BQSR v. BQSR)", fontsize = 12)
-    matplotlib.pylot.legend((c1, c2), (c1Label, c2Label), loc = 'lower left', fontsize = 10)
+    plot.plot((1, 0), color='navy', lw=1, linestyle='--')
+    plot.ylim([0, 1])
+    plot.xlim([0, 1])
+    plot.title("Sensitivity Specificity Curve – Tumor LOD Thresholds – All Variants (No BQSR v. BQSR)", fontsize = 12)
+    plot.legend((c1, c2), (c1Label, c2Label), loc = 'lower left', fontsize = 10)
     fig.savefig(outputdir + "/senspec-all-optimal-thresh.pdf", bbox_inches='tight')
     fig.clf()
         
@@ -1091,10 +1334,10 @@ if __name__ == "__main__":
     #
 
     # No BQSR Condition Statistics
-    printBest(condition1Analysis, output=outputdir + "/c1-all-analysis-accuracy") # Accuracy
-    printBest(condition1Analysis, "f1score", output=outputdir + "/c1-all-analysis-f1score")
-    printBest(condition1Analysis, "ppv", output=outputdir + "/c1-all-analysis-ppv")
-    c1MaxThresh, c1MaxAnalysis = getMaximizedAnalysis(condition1Analysis, "sensitivity", "specificity")
+    printBest(condition1Analyses, output=outputdir + "/c1-all-analysis-accuracy") # Accuracy
+    printBest(condition1Analyses, "f1score", output=outputdir + "/c1-all-analysis-f1score")
+    printBest(condition1Analyses, "ppv", output=outputdir + "/c1-all-analysis-ppv")
+    c1MaxThresh, c1MaxAnalysis = getMaximizedAnalysis(condition1Analyses, "sensitivity", "specificity")
     # Print / Write Analyses
     with open(outputdir + "/max-sens-spec-all-nobqsr", "w") as output:
         output.write("==================================================\n")
@@ -1105,10 +1348,10 @@ if __name__ == "__main__":
         output.write("==================================================\n")
 
     # BQSR Condition Statistics
-    printBest(condition2Analysis, output=outputdir + "/c2-all-analysis-accuracy") # Accuracy
-    printBest(condition2Analysis, "f1score", output=outputdir + "/c2-all-analysis-f1score")
-    printBest(condition2Analysis, "ppv", output=outputdir + "/c2-all-analysis-ppv")
-    c2MaxThresh, c2MaxAnalysis = getMaximizedAnalysis(condition2Analysis, "sensitivity", "specificity")
+    printBest(condition2Analyses, output=outputdir + "/c2-all-analysis-accuracy") # Accuracy
+    printBest(condition2Analyses, "f1score", output=outputdir + "/c2-all-analysis-f1score")
+    printBest(condition2Analyses, "ppv", output=outputdir + "/c2-all-analysis-ppv")
+    c2MaxThresh, c2MaxAnalysis = getMaximizedAnalysis(condition2Analyses, "sensitivity", "specificity")
     # Print / Write Analyses
     with open(outputdir + "/max-sens-spec-all-bqsr", "w") as output:
         output.write("==================================================\n")

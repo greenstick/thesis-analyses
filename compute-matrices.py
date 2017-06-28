@@ -1,10 +1,18 @@
-#! /home/users/cordier/.linuxbrew/bin/python3
+e#! /home/users/cordier/.linuxbrew/bin/python3
 
 # Imports & Methods
 from operator import itemgetter
 from collections import OrderedDict
 import operator, hashlib
 import vcf as VCF
+import argparse
+import matplotlib.pyplot as plt
+from matplotlib import cm
+from matplotlib.colors import LinearSegmentedColormap
+import matplotlib
+import pandas as pd
+import numpy as np
+import re
 
 #
 # Data Structuring
@@ -61,7 +69,7 @@ def subsetHashMapByFormatRange (hashMap, rangeTuple, key = "AF", sampleIdx = 0):
     return subset, excluded
 
 # Generate Analysis From Variant Hashmaps
-def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation = "<", threshold = 10):
+def generateAnalysis (aggConditionHashMap, truthSet, metricKey = "TLOD", operation = "<", threshold = 10):
     
     # Map Operators
     operators = {
@@ -74,7 +82,7 @@ def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation 
 
     # Sort Variants into TP/TN/FP/FN Sets
     tpSet, fpSet, tnSet, fnSet = set(), set(), set(), set()
-    for hashKey, record in conditionHashMap.items():
+    for hashKey, record in aggConditionHashMap.items():
         if operators[operation](float(record.INFO[metricKey]), threshold):
             if hashKey in truthSet:
                 fnSet.add(hashKey)
@@ -135,12 +143,12 @@ def generateAnalysis (conditionHashMap, truthSet, metricKey = "TLOD", operation 
     return analysis
 
 # Compute Lots of Statistics n' Stuff
-def generateAnalyses (conditionHashMap, truthHashMap, metricKey = "TLOD", thresholds = 100, skip = 1):
+def generateAnalyses (aggConditionHashMap, truthHashMap, metricKey = "TLOD", thresholds = 100, skip = 1):
     # Setup Data Structures
     analyses   = OrderedDict()
     # Use Thresholds to Classify Positive or Negative 
     for threshold in range(0, thresholds, skip):
-        analyses[threshold] = generateAnalysis(conditionHashMap, truthHashMap, metricKey = metricKey, threshold = threshold)
+        analyses[threshold] = generateAnalysis(aggConditionHashMap, truthHashMap, metricKey = metricKey, threshold = threshold)
     return analyses
 
 # Get Analysis of Threshold with Maximum Combined Metrics (e.g. sensitivity and specificity or tpr and fpr)
@@ -189,7 +197,7 @@ def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, 
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filledLength = int(length * iteration // total)
     bar = fill * filledLength + '-' * (length - filledLength)
-    print('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
+    print('\r\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
     # Print New Line on Complete
     if iteration == total: 
         print()
@@ -199,6 +207,32 @@ def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, 
 #
 
 if __name__ == "__main__":
+
+    # Parse Arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-a", "--all", action = "store_true", help = "Generate Heat Map of All VAF Ranges")
+    parser.add_argument("-l", "--lfv", action = "store_true", help = "Generate Heat Map of Low Frequency VAF Ranges")
+    parser.add_argument("-j", "--json", action = "store_true", help = "Output Heat Map Data as JSON for D3.js")
+    parser.add_argument("-l", "--load", action = "store_true", help = "Load Heat Map Data from JSON")
+    parser.add_argument("-o", "--output", type = str, help = "Output Prefix")
+    argsDict = vars(parser.parse_args())
+    allRanges = argsDict["all"]
+    lfvRanges = argsDict["lfv"]
+    outputJSON = argsDict["json"]
+    loadJSON = argsDict["load"]
+    outputdir = argsDict["output"]
+    heatMapRanges = []
+
+    # Input Resolution
+    if allRanges is False and lfvRanges is False:
+        print("Status: No VAF Range Provided (--all or --lfv), Defaulting to All VAF Ranges")
+        heatMapRanges.append("allranges")
+    if allRanges:
+        heatMapRanges.append("allranges")
+    if lfvRanges:
+        heatMapRanges.append("lfvranges")
+    if outputdir is None:
+        outputdir = "output"
 
     metadata = {
 
@@ -255,9 +289,45 @@ if __name__ == "__main__":
         "synthetic.challenge.set2.tumor.all.truth.vcf",
         "synthetic.challenge.set3.tumor.20pctmasked.truth.vcf"
     ]
-    uniqueProps = ["CHROM", "POS", "REF", "ALT"] # Variant Record Properties to Define Uniqueness
+
+    # 
+    # Compute Matrices & Save as JSON
+    # 
+
+    # Output Data Format
+    """
+    data = [
+        {
+            "label"         : String,
+            "metakey"       : String,
+            "set"           : {
+                "name"          : String,
+                "key"           : String
+            },
+            "condition"     : {
+                "name"          : String,
+                "key"           : String
+            },
+            "subcondition"  : {
+                "name"          : String,
+                "key"           : String
+            },
+            "max"           : {
+                "threshold"     : Integer,
+                "analysis"      : Dictionary,
+                "rangedAnalyses": [{
+                    "vafRange"      : Tuple,
+                    "analysis"      : Dictionary         
+                }]
+            }
+        }
+    ]
+    """
+
+    uniqueProps = ["CHROM", "POS", "REF", "ALT"] # Variant Record Properties to Define Uniqueness - Qual Avoided (BQSR)
+    combinedData = {}
     for variantRange in ["lfvranges", "allranges"]:
-        conditions = []
+        combinedData[variantRange] = []
         for dataset in metadata["datasets"]:
             # Set Active Truth & Open VCF
             truthActive = [truthset for truthset in truthsets if dataset["key"] in truthset][0]
@@ -269,36 +339,37 @@ if __name__ == "__main__":
                 for condition in metadata["conditions"]:
                     for subcondition in metadata["subconditions"]:
                         data = {}
-                        label = "%s\n%s\n%s" % (dataset["name"], condition["name"], subcondition["name"])
-                        metakey = "%s-%s-%s" % (dataset["key"], condition["key"], subcondition["key"])
+                        data["label"] = "%s\n%s\n%s" % (dataset["name"], condition["name"], subcondition["name"])
+                        data["metakey"] = "%s-%s-%s" % (dataset["key"], condition["key"], subcondition["key"])
+                        data["set"] = dataset
+                        data["condition"] = condition
+                        data["subcondition"] = subcondition
+                        data["max"] = {}
                         # Progress Bar
                         printProgressBar(i, total, prefix = "Computing Matrix:", suffix = "%s - %s - %s" % (dataset["name"], condition["name"], subcondition["name"]))
                         # Set Active Condition
-                        conditionActive = "vcf/synthetic.challenge.%s.%s.default.%s.raw.snps.indels.vcf" % (dataset["key"], condition["key"], subcondition["key"])
-                        with open(conditionActive) as conditionHandle:
+                        aggConditionActive = "vcf/synthetic.challenge.%s.%s.default.%s.raw.snps.indels.vcf" % (dataset["key"], condition["key"], subcondition["key"])
+                        with open(aggConditionActive) as aggConditionHandle:
                             # Read in Condition VCF & Generate Variant HashMap
-                            conditionReader = VCF.Reader(conditionHandle)
-                            conditionHashMap = hashVariants(conditionReader, uniqueProps, algorithm = "sha1")
+                            aggConditionReader = VCF.Reader(aggConditionHandle)
+                            aggConditionHashMap = hashVariants(aggConditionReader, uniqueProps, algorithm = "sha1")
                             # Generate Analyses by tLOD 0 - 100, Find Optimal Threshold
-                            data["label"] = label
-                            data["metakey"] = metakey
-                            data["aucAnalyses"] = generateAnalyses(conditionHashMap, truthSet, metricKey = "TLOD", thresholds = 100, skip = 1)
-                            data["maxThreshold"], maximizedAnalysis = getMaximizedAnalysis(data["aucAnalyses"], "sensitivity", "specificity")
-                            data["vafRanges"] = metadata[variantRange]
+                            data["analyses"] = generateAnalyses(aggConditionHashMap, truthSet, metricKey = "TLOD", thresholds = 100, skip = 1)
+                            data["max"]["threshold"], data["max"]["analysis"] = getMaximizedAnalysis(data["analyses"], "sensitivity", "specificity")
                             # Subset Condition HashMap by VAF Range, Generate Analysis for Range at Optimal Threshold
                             analyses = []
                             for a, b in metadata[variantRange]:
-                                subsetHashMap, excluded = subsetHashMapByFormatRange(conditionHashMap, (float(a), float(b)))
+                                subsetHashMap, excluded = subsetHashMapByFormatRange(aggConditionHashMap, (float(a), float(b)))
                                 analysis = {
-                                    "vafrange" : [float(a), float(b)],
-                                    "analysis" : generateAnalysis(subsetHashMap, truthSet, threshold = data["maxThreshold"])
+                                    "vafRange" : (float(a), float(b)),
+                                    "analysis" : generateAnalysis(subsetHashMap, truthSet, threshold = data["max"]["threshold"])
                                 }
                                 analyses.append(analysis)
-                            data["maxAnalyses"] = analyses
+                            data["max"]["rangedAnalyses"] = analyses
+                        combinedData[variantRange].append(data)
                         i += 1
-                        printProgressBar(i, total, prefix = "Computing Matrices:", suffix = "%s - %s - %s" % (dataset["name"], condition["name"], subcondition["name"]))
-                        conditions.append(data)
-        writeJSON(conditions, "%s-heatmaps.json" % variantRange)
+                        printProgressBar(i, total, prefix = "Computing Matrix:", suffix = "%s - %s - %s" % (dataset["name"], condition["name"], subcondition["name"]))
+        writeJSON(combinedData[variantRange], "%s-heatmaps.json" % variantRange)
 
 else:
     pass
