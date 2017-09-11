@@ -713,6 +713,8 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--condition", type = str, help = "Error Model Condition")
     parser.add_argument("-o", "--output", type = str, help = "Output Prefix")
     parser.add_argument("-n", "--ncores", type = str, help = "Number of Cores to Use")
+    parser.add_argument("-N", "--normal", type = str, help = "Normal Sample Token")
+    parser.add_argument("-T", "--tumor", type = str, help = "Tumor Sample Token")
     argsDict = vars(parser.parse_args())
     dataset = argsDict["set"]
     condition = argsDict["condition"]
